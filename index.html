@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<!-- iPad向け：拡大禁止・ノッチの内側まで描画する -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<!-- ホーム画面に追加したとき、アドレスバーなしの全画面で開く -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="80周年抽選会">
+<title>新興窯業株式会社 80周年記念抽選会</title>
+
+<style>
+/* =================================================================
+   ステップ1：画面の枠組みだけ
+   ルーレットの本演出と音は、次のステップで入れます。
+   ================================================================= */
+
+:root{
+  --navy1:#1a1a2e;      /* 背景（上） */
+  --navy2:#16213e;      /* 背景（下） */
+  --gold:#B8902F;       /* ゴールド（主） */
+  --gold2:#C9A548;      /* ゴールド（副） */
+  --gold3:#D4A548;      /* ゴールド（明るめ） */
+  --cream:#F8F5ED;      /* 文字 */
+  /* 明朝を先に置く。Georgia を先頭にすると数字が旧スタイル（8o のように高さが揃わない）
+     になってしまうため、PC版と同じ順番にしてある。 */
+  --mincho: "游明朝", "Yu Mincho", YuMincho, "Hiragino Mincho ProN",
+            Georgia, "Times New Roman", "MS PMincho", serif;
+}
+
+*{ box-sizing:border-box; margin:0; padding:0; }
+
+html, body{
+  height:100%;
+  overflow:hidden;                    /* スクロールのバウンドを止める */
+  overscroll-behavior:none;
+}
+
+body{
+  position:fixed; inset:0;            /* 指でページ全体が動かないように固定 */
+  background:linear-gradient(160deg, var(--navy1) 0%, var(--navy2) 100%);
+  color:var(--cream);
+  font-family:var(--mincho);
+  /* 誤操作防止：文字選択・長押しメニュー・ダブルタップ拡大を無効化 */
+  -webkit-user-select:none; user-select:none;
+  -webkit-touch-callout:none;
+  -webkit-tap-highlight-color:transparent;
+  touch-action:manipulation;
+}
+
+/* 画面（3種類を切り替えて使う）
+   高さは --vh（キーボードを除いた実際に見えている高さ）を使う。
+   これを inset:0 のままにすると、キーボードが出たときにボタンが隠れて押せなくなる。 */
+.screen{
+  position:absolute; top:0; left:0; right:0;
+  height:var(--vh, 100%);
+  display:none;
+  flex-direction:column;
+  align-items:center;
+  /* ノッチ・ホームバーを避ける */
+  padding: max(16px, env(safe-area-inset-top))
+           max(16px, env(safe-area-inset-right))
+           max(16px, env(safe-area-inset-bottom))
+           max(16px, env(safe-area-inset-left));
+}
+.screen.active{ display:flex; }
+
+/* ---------------- 共通パーツ ---------------- */
+
+/* 大きめのゴールドボタン（指で押しやすいサイズ） */
+.btn{
+  font-family:var(--mincho);
+  font-size:clamp(20px, 3.2vmin, 30px);
+  letter-spacing:.18em;
+  color:var(--gold3);
+  background:rgba(184,144,47,.10);
+  border:1.5px solid var(--gold);
+  border-radius:9999px;
+  padding:0 clamp(28px, 6vmin, 60px);
+  min-height:clamp(60px, 9vmin, 84px);   /* 60pt以上を確保 */
+  min-width:clamp(180px, 34vmin, 300px);
+  display:inline-flex; align-items:center; justify-content:center;
+  cursor:pointer;
+  transition:transform .12s ease, background .12s ease;
+}
+.btn:active{ transform:scale(.96); background:rgba(184,144,47,.24); }
+.btn.primary{
+  background:linear-gradient(180deg, rgba(212,165,72,.30), rgba(184,144,47,.14));
+  color:var(--cream);
+  border-color:var(--gold3);
+}
+.btn.quiet{
+  font-size:clamp(16px, 2.4vmin, 22px);
+  min-height:clamp(52px, 7.5vmin, 68px);
+  min-width:clamp(130px, 24vmin, 200px);
+  color:var(--gold2);
+}
+.btn[disabled]{ opacity:.35; pointer-events:none; }
+
+/* 会社名（画面下部に控えめに）。
+   絶対配置にして、中央の内容の位置に影響を与えないようにする。 */
+.footer{
+  position:absolute;
+  left:0; right:0;
+  bottom:max(14px, env(safe-area-inset-bottom));
+  font-size:clamp(11px, 1.7vmin, 16px);
+  letter-spacing:.28em;
+  color:rgba(248,245,237,.42);
+  text-align:center;
+  pointer-events:none;         /* 下端の文字がボタンのタップを邪魔しないように */
+}
+/* キーボードが出ている間は会社名を隠す（ボタンと重ならないように） */
+body.keyboard .footer{ display:none; }
+
+/* 隅の小さなボタン（音量・リセット） */
+.corner{
+  position:absolute; top:max(10px, env(safe-area-inset-top));
+  display:flex; align-items:center; justify-content:center;
+  width:52px; height:52px;
+  border-radius:50%;
+  border:1px solid rgba(184,144,47,.35);
+  background:rgba(255,255,255,.03);
+  color:rgba(212,165,72,.75);
+  font-size:20px;
+  cursor:pointer;
+  z-index:20;
+}
+.corner:active{ background:rgba(184,144,47,.2); }
+#btnSound{ left:max(10px, env(safe-area-inset-left)); }
+#btnReset{ right:max(10px, env(safe-area-inset-right)); }
+#btnReset.holding{ background:rgba(184,144,47,.45); }
+
+/* ================= 初期設定画面 ================= */
+
+/* キーボードで高さが足りなくなったときの保険として、この画面だけスクロールを許す */
+#setup{
+  justify-content:center;
+  gap:clamp(10px, 2.2vmin, 26px);
+  overflow-y:auto;
+  -webkit-overflow-scrolling:touch;
+}
+
+.title{
+  text-align:center;
+  letter-spacing:.3em;
+  line-height:1.9;
+  color:var(--gold3);
+  font-size:clamp(15px, 2.6vmin, 24px);
+}
+.title strong{
+  display:block;
+  font-weight:normal;
+  font-size:clamp(24px, 4.6vmin, 44px);
+  color:var(--cream);
+  letter-spacing:.22em;
+}
+
+.lead{
+  font-size:clamp(14px, 2.2vmin, 20px);
+  letter-spacing:.16em;
+  color:rgba(248,245,237,.75);
+  margin-top:clamp(10px, 3vmin, 34px);
+}
+
+/* 人数の増減（キーボードを使わないので、iPadでの事故が起きない） */
+.stepper{
+  display:flex; align-items:center; justify-content:center;
+  gap:clamp(16px, 3.4vmin, 36px);
+}
+.step{
+  width:clamp(66px, 10vmin, 92px);
+  height:clamp(66px, 10vmin, 92px);
+  border-radius:50%;
+  border:1.5px solid var(--gold);
+  background:rgba(184,144,47,.10);
+  color:var(--gold3);
+  font-family:var(--mincho);
+  font-size:clamp(30px, 5vmin, 44px);
+  line-height:1;
+  display:flex; align-items:center; justify-content:center;
+  cursor:pointer;
+  -webkit-user-select:none; user-select:none;
+}
+.step:active{ background:rgba(184,144,47,.3); transform:scale(.94); }
+.step[disabled]{ opacity:.28; pointer-events:none; }
+
+#maxVal{
+  font-size:clamp(52px, 10vmin, 100px);
+  line-height:1;
+  color:var(--cream);
+  min-width:2.6em;
+  text-align:center;
+  font-variant-numeric:tabular-nums;
+}
+
+/* JavaScriptが動いているかの確認表示（本番前に消します） */
+#jsCheck{
+  position:absolute;
+  bottom:max(38px, calc(env(safe-area-inset-bottom) + 26px));
+  left:0; right:0;
+  text-align:center;
+  font-size:clamp(10px, 1.5vmin, 14px);
+  letter-spacing:.12em;
+  color:#E8A0A0;
+  pointer-events:none;
+}
+#jsCheck.ok{ color:rgba(120,200,150,.7); }
+
+.note{
+  font-size:clamp(12px, 1.9vmin, 17px);
+  letter-spacing:.12em;
+  color:rgba(248,245,237,.5);
+  min-height:1.6em;
+  text-align:center;
+}
+.note.error{ color:#E8A0A0; }
+
+/* ================= 抽選画面 ================= */
+
+#main{ justify-content:center; }
+
+/* 順位（第5位 など） */
+#rank{
+  font-size:clamp(26px, 5.4vmin, 56px);
+  letter-spacing:.28em;
+  color:var(--gold3);
+  text-align:center;
+  padding-left:.28em;               /* letter-spacing の分を戻して中央に見せる */
+}
+
+/* 数字を映す枠。※横方向には切り取らない（数字が見切れる原因になるため） */
+#reelBox{
+  margin:clamp(14px, 3.4vmin, 40px) 0;
+  width:min(86vw, 620px);
+  height:clamp(150px, 34vh, 340px);
+  border-top:1px solid rgba(184,144,47,.5);
+  border-bottom:1px solid rgba(184,144,47,.5);
+  display:flex; align-items:center; justify-content:center;
+  position:relative;
+}
+#reelBox::before, #reelBox::after{     /* 上下の淡いフェード（スロットらしさ） */
+  content:''; position:absolute; left:0; right:0; height:22%;
+  pointer-events:none;
+}
+#reelBox::before{ top:0;    background:linear-gradient(to bottom, rgba(22,33,62,.9), transparent); }
+#reelBox::after { bottom:0; background:linear-gradient(to top,    rgba(22,33,62,.9), transparent); }
+
+#number{
+  font-size:min(26vh, 34vw, 240px);
+  line-height:1;
+  color:var(--cream);
+  letter-spacing:.02em;
+  font-variant-numeric:tabular-nums;   /* 桁がぶれない */
+  text-shadow:0 0 40px rgba(212,165,72,.35);
+}
+#number.win{ color:var(--gold3); text-shadow:0 0 60px rgba(212,165,72,.7); }
+/* まだ回していないときの「—」は、小さく淡く出す */
+#number.idle{
+  font-size:min(9vh, 11vw, 80px);
+  color:rgba(248,245,237,.22);
+  text-shadow:none;
+}
+
+/* ボタンを置く場所（高さを固定して、切り替わってもレイアウトが揺れないように） */
+#controls{
+  display:flex; gap:clamp(12px, 2.4vmin, 26px);
+  flex-wrap:wrap; justify-content:center; align-items:center;
+  min-height:clamp(72px, 11vmin, 100px);
+}
+
+/* ================= 完了画面 ================= */
+
+#done{ justify-content:center; gap:clamp(16px, 3vmin, 34px); }
+#doneMsg{
+  text-align:center;
+  font-size:clamp(28px, 5.6vmin, 60px);
+  letter-spacing:.24em;
+  color:var(--gold3);
+  line-height:1.8;
+}
+#doneSub{
+  font-size:clamp(14px, 2.2vmin, 20px);
+  letter-spacing:.2em;
+  color:rgba(248,245,237,.6);
+}
+
+/* ================= 確認ダイアログ ================= */
+
+#dlgBack{
+  position:absolute; inset:0; z-index:30;
+  display:none; align-items:center; justify-content:center;
+  background:rgba(10,12,24,.78);
+  padding:24px;
+}
+#dlgBack.active{ display:flex; }
+#dlg{
+  max-width:min(88vw, 560px);
+  background:linear-gradient(160deg, #1e2440, #182036);
+  border:1px solid var(--gold);
+  border-radius:18px;
+  padding:clamp(24px, 4.5vmin, 44px);
+  text-align:center;
+}
+#dlgText{
+  font-size:clamp(16px, 2.6vmin, 24px);
+  line-height:2;
+  letter-spacing:.1em;
+  margin-bottom:clamp(20px, 3.4vmin, 34px);
+}
+#dlgText b{ color:var(--gold3); font-size:1.35em; font-weight:normal; }
+.dlg-btns{ display:flex; gap:16px; justify-content:center; }
+/* ダイアログ内は2つ横並びに収まる幅にする（縦向きでも折り返さない） */
+.dlg-btns .btn{ min-width:clamp(120px, 20vmin, 190px); padding:0 clamp(18px, 3vmin, 34px); }
+</style>
+</head>
+<body>
+
+<!-- 隅の小さなボタン（抽選画面・完了画面でのみ表示） -->
+<div class="corner" id="btnSound" title="音のON/OFF">♪</div>
+<div class="corner" id="btnReset" title="最初からやり直す（長押し）">⏻</div>
+
+
+<!-- ================= 初期設定画面 ================= -->
+<div class="screen active" id="setup">
+  <div class="title">
+    新興窯業株式会社
+    <strong>80周年記念抽選会</strong>
+  </div>
+
+  <div class="lead">参加人数</div>
+  <!-- キーボードを使わず、＋／− で人数を決める（長押しで早く動きます） -->
+  <div class="stepper">
+    <button class="step" id="btnMinus">−</button>
+    <div id="maxVal">15</div>
+    <button class="step" id="btnPlus">＋</button>
+  </div>
+  <div class="note" id="setupNote">1 〜 15 番の中から抽選します</div>
+
+  <button class="btn primary" id="btnStartApp">はじめる</button>
+
+  <div class="footer">新興窯業株式会社　80周年記念抽選会</div>
+  <div id="jsCheck">起動確認：JavaScript が動いていません</div>
+</div>
+
+
+<!-- ================= 抽選画面 ================= -->
+<div class="screen" id="main">
+  <div id="rank">第 5 位</div>
+
+  <div id="reelBox">
+    <div id="number">—</div>
+  </div>
+
+  <div id="controls">
+    <button class="btn primary" id="btnSpin">スタート</button>
+    <button class="btn primary" id="btnStop" style="display:none">ストップ</button>
+    <button class="btn quiet"   id="btnRedraw" style="display:none">再抽選</button>
+    <button class="btn primary" id="btnNext"   style="display:none">次へ</button>
+  </div>
+
+  <div class="footer">新興窯業株式会社　80周年記念抽選会</div>
+</div>
+
+
+<!-- ================= 完了画面 ================= -->
+<div class="screen" id="done">
+  <div id="doneMsg">抽選終了</div>
+  <div id="doneSub">ありがとうございました</div>
+  <div class="footer">新興窯業株式会社　80周年記念抽選会</div>
+</div>
+
+
+<!-- ================= 確認ダイアログ ================= -->
+<div id="dlgBack">
+  <div id="dlg">
+    <div id="dlgText"></div>
+    <div class="dlg-btns">
+      <button class="btn quiet" id="dlgNo">やめる</button>
+      <button class="btn primary" id="dlgYes">はい</button>
+    </div>
+  </div>
+</div>
+
+
+<script>
+/* =================================================================
+   iPad版 抽選アプリ — ステップ1（画面の枠組み）
+   -----------------------------------------------------------------
+   このステップで出来ること：
+     ・参加人数を入れて抽選を始められる
+     ・第5位 → 第1位まで、5回ぶんの進行ができる
+     ・スタート／ストップ／再抽選／次へ の流れが確認できる
+   まだ入っていないもの：
+     ・本物のルーレット演出（今は数字がパラパラ切り替わるだけ）
+     ・音、紙吹雪、進行状況の自動保存
+   ================================================================= */
+
+const APP_VERSION = 'ipad-step1';
+
+// ---- 画面の要素をまとめて取得 ------------------------------------
+const $ = (id) => document.getElementById(id);
+const scSetup = $('setup'), scMain = $('main'), scDone = $('done');
+const elMaxVal = $('maxVal'), setupNote = $('setupNote');
+const btnMinus = $('btnMinus'), btnPlus = $('btnPlus');
+const elRank = $('rank'), elNumber = $('number');
+const btnSpin = $('btnSpin'), btnStop = $('btnStop'),
+      btnRedraw = $('btnRedraw'), btnNext = $('btnNext');
+const btnSound = $('btnSound'), btnReset = $('btnReset');
+const dlgBack = $('dlgBack'), dlgText = $('dlgText'),
+      dlgYes = $('dlgYes'), dlgNo = $('dlgNo');
+
+// ---- 抽選の状態 --------------------------------------------------
+// round は 0〜4。順位は 5 - round（0回目＝第5位、4回目＝第1位）。
+const state = {
+  max: 0,          // 参加人数
+  round: 0,        // 今が何回目か
+  pool: [],        // まだ当たっていない番号
+  winners: [],     // [{rank, num}]
+  declined: [],    // 辞退した番号（以降ずっと対象外）
+  phase: 'idle'    // idle / spinning / result
+};
+
+let soundOn = true;
+
+// 回ごとの演出（ステップ2で実際に使う。今は割り当てだけ用意しておく）
+const PATTERNS = ['smooth', 'standard', 'stay', 'tease', 'double'];
+
+const rankOf = (round) => 5 - round;
+
+
+/* -----------------------------------------------------------------
+   画面の切り替え
+   ----------------------------------------------------------------- */
+function showScreen(name){
+  [scSetup, scMain, scDone].forEach(s => s.classList.remove('active'));
+  ({ setup: scSetup, main: scMain, done: scDone })[name].classList.add('active');
+  // 隅のボタンは初期設定画面では隠す
+  const inGame = (name !== 'setup');
+  btnSound.style.display = inGame ? 'flex' : 'none';
+  btnReset.style.display = inGame ? 'flex' : 'none';
+}
+
+
+/* -----------------------------------------------------------------
+   初期設定画面
+   ----------------------------------------------------------------- */
+const MAX_MIN = 5, MAX_MAX = 999;   // 5回抽選するので最低5人
+let maxInput = 15;                  // 参加人数（既定値）
+
+function refreshSetupNote(){
+  elMaxVal.textContent = maxInput;
+  setupNote.textContent = `1 〜 ${maxInput} 番の中から抽選します`;
+  btnMinus.disabled = (maxInput <= MAX_MIN);
+  btnPlus.disabled  = (maxInput >= MAX_MAX);
+}
+
+function changeMax(delta){
+  maxInput = Math.min(MAX_MAX, Math.max(MAX_MIN, maxInput + delta));
+  refreshSetupNote();
+}
+
+// ＋／− は、押しっぱなしにすると連続で動く（人数が多いときのため）
+function bindStep(btn, delta){
+  let repeatTimer = null, accelTimer = null;
+  const start = (e) => {
+    e.preventDefault();
+    changeMax(delta);
+    // 500ms 押し続けたら連続、さらに続けると速くなる
+    accelTimer = setTimeout(() => {
+      repeatTimer = setInterval(() => changeMax(delta), 110);
+      accelTimer = setTimeout(() => {
+        clearInterval(repeatTimer);
+        repeatTimer = setInterval(() => changeMax(delta), 40);
+      }, 1600);
+    }, 500);
+  };
+  const end = () => { clearTimeout(accelTimer); clearInterval(repeatTimer); };
+  btn.addEventListener('touchstart', start, { passive:false });
+  btn.addEventListener('mousedown', start);
+  ['touchend','touchcancel','mouseup','mouseleave'].forEach(ev => btn.addEventListener(ev, end));
+}
+bindStep(btnMinus, -1);
+bindStep(btnPlus,  +1);
+
+function startApp(){
+  state.max = maxInput;
+  state.round = 0;
+  state.pool = Array.from({ length: maxInput }, (_, i) => i + 1);
+  state.winners = [];
+  state.declined = [];
+
+  unlockAudio();          // iOSは「最初のタッチ」で音を有効にする必要がある
+  requestWakeLock();      // 画面が消えないようにする
+  beginRound();
+  showScreen('main');
+}
+
+// キーボードが閉じる拍子にタップが空振りすることがあるので、
+// click だけでなく touchend でも受け取る（連続発火は 500ms でまとめて無視）。
+let lastStartApp = 0;
+function startAppOnce(){
+  const now = Date.now();
+  if (now - lastStartApp < 500) return;
+  lastStartApp = now;
+  startApp();
+}
+$('btnStartApp').addEventListener('click', startAppOnce);
+$('btnStartApp').addEventListener('touchend', startAppOnce);
+
+
+/* -----------------------------------------------------------------
+   抽選画面
+   ----------------------------------------------------------------- */
+
+// 1回ぶんの準備（順位を表示して、待機状態にする）
+function beginRound(){
+  state.phase = 'idle';
+  elRank.textContent = `第 ${rankOf(state.round)} 位`;
+  elNumber.textContent = '—';
+  elNumber.classList.remove('win');
+  elNumber.classList.add('idle');
+  updateButtons();
+}
+
+function updateButtons(){
+  const p = state.phase;
+  btnSpin.style.display   = (p === 'idle')     ? 'inline-flex' : 'none';
+  btnStop.style.display   = (p === 'spinning') ? 'inline-flex' : 'none';
+  btnRedraw.style.display = (p === 'result')   ? 'inline-flex' : 'none';
+  btnNext.style.display   = (p === 'result')   ? 'inline-flex' : 'none';
+  btnNext.textContent = (state.round >= 4) ? '終了' : '次へ';
+}
+
+// --- 仮のルーレット（ステップ2で本物の演出に差し替えます） ---
+let spinTimer = null;
+
+function startSpin(){
+  if (state.phase !== 'idle') return;
+  if (state.pool.length === 0){ alert('抽選できる番号が残っていません'); return; }
+  state.phase = 'spinning';
+  elNumber.classList.remove('win', 'idle');
+  updateButtons();
+  // 1セル＝60ms（本番の回転速度と同じテンポにしてある）
+  spinTimer = setInterval(() => {
+    elNumber.textContent = state.pool[Math.floor(Math.random() * state.pool.length)];
+  }, 60);
+}
+
+function stopSpin(){
+  if (state.phase !== 'spinning') return;
+  clearInterval(spinTimer); spinTimer = null;
+
+  // ストップを押した瞬間に、残っている番号から公正に1つ選ぶ
+  const idx = Math.floor(Math.random() * state.pool.length);
+  const winner = state.pool[idx];
+  state.pool.splice(idx, 1);
+  state.winners.push({ rank: rankOf(state.round), num: winner });
+
+  elNumber.textContent = winner;
+  elNumber.classList.add('win');
+  state.phase = 'result';
+  updateButtons();
+}
+
+btnSpin.addEventListener('click', startSpin);
+btnStop.addEventListener('click', stopSpin);
+
+// --- 再抽選（辞退） ---
+btnRedraw.addEventListener('click', () => {
+  const last = state.winners[state.winners.length - 1];
+  confirmDialog(
+    `第 ${last.rank} 位の当選番号<br><b>${last.num}</b><br>を辞退として、もう一度抽選しますか？`,
+    () => {
+      state.winners.pop();
+      state.declined.push(last.num);   // 以降の回でも二度と出さない（プールに戻さない）
+      beginRound();
+    }
+  );
+});
+
+// --- 次へ ---
+btnNext.addEventListener('click', () => {
+  if (state.round >= 4){ showScreen('done'); return; }
+  state.round++;
+  beginRound();
+});
+
+
+/* -----------------------------------------------------------------
+   確認ダイアログ
+   ----------------------------------------------------------------- */
+let dlgCallback = null;
+function confirmDialog(html, onYes){
+  dlgText.innerHTML = html;
+  dlgCallback = onYes;
+  dlgBack.classList.add('active');
+}
+dlgYes.addEventListener('click', () => {
+  dlgBack.classList.remove('active');
+  const cb = dlgCallback; dlgCallback = null;
+  if (cb) cb();
+});
+dlgNo.addEventListener('click', () => {
+  dlgBack.classList.remove('active');
+  dlgCallback = null;
+});
+
+
+/* -----------------------------------------------------------------
+   隅のボタン
+   ----------------------------------------------------------------- */
+
+// 音のON/OFF（音そのものはステップ2で入れます）
+btnSound.addEventListener('click', () => {
+  soundOn = !soundOn;
+  btnSound.textContent = soundOn ? '♪' : '×';
+  btnSound.style.opacity = soundOn ? '1' : '.45';
+});
+
+// リセットは「2秒長押し」。誤タップでは発動しない。
+let holdTimer = null;
+function holdStart(e){
+  e.preventDefault();
+  btnReset.classList.add('holding');
+  holdTimer = setTimeout(() => {
+    btnReset.classList.remove('holding');
+    confirmDialog('抽選を最初からやり直しますか？<br>これまでの結果は消えます。', () => {
+      clearInterval(spinTimer); spinTimer = null;
+      state.phase = 'idle';
+      showScreen('setup');
+      refreshSetupNote();
+    });
+  }, 2000);
+}
+function holdEnd(){
+  btnReset.classList.remove('holding');
+  clearTimeout(holdTimer);
+}
+btnReset.addEventListener('touchstart', holdStart, { passive:false });
+btnReset.addEventListener('mousedown',  holdStart);
+['touchend','touchcancel','mouseup','mouseleave'].forEach(ev =>
+  btnReset.addEventListener(ev, holdEnd));
+
+
+/* -----------------------------------------------------------------
+   iPad対策
+   ----------------------------------------------------------------- */
+
+// ピンチ拡大を無効化（Safariの独自イベント）
+['gesturestart','gesturechange','gestureend'].forEach(ev =>
+  document.addEventListener(ev, e => e.preventDefault(), { passive:false }));
+
+/* 画面の高さを「キーボードを除いた、実際に見えている高さ」に合わせる。
+   これをしないと、キーボードが出たときに下のボタンが隠れて押せなくなる。 */
+function applyViewportHeight(){
+  const vv = window.visualViewport;
+  const h = vv ? vv.height : window.innerHeight;
+  document.documentElement.style.setProperty('--vh', h + 'px');
+  // キーボードが出ているかどうか（高さが1割以上縮んだら出ていると判断）
+  const keyboardOpen = !!vv && (window.innerHeight - vv.height > window.innerHeight * 0.1);
+  document.body.classList.toggle('keyboard', keyboardOpen);
+}
+if (window.visualViewport){
+  window.visualViewport.addEventListener('resize', applyViewportHeight);
+  window.visualViewport.addEventListener('scroll', applyViewportHeight);
+}
+window.addEventListener('resize', applyViewportHeight);
+window.addEventListener('orientationchange', () => setTimeout(applyViewportHeight, 300));
+applyViewportHeight();
+
+// 画面が消えないようにする（iPadOS 16.4以降のSafariで有効）
+let wakeLock = null;
+async function requestWakeLock(){
+  try{
+    if ('wakeLock' in navigator){
+      wakeLock = await navigator.wakeLock.request('screen');
+    }
+  }catch(err){ /* 使えない環境では何もしない（手動で自動ロックをオフにする） */ }
+}
+// 別アプリに切り替えて戻ってきたときは、取り直す
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && wakeLock === null) requestWakeLock();
+});
+
+// 音を鳴らせる状態にする（iOSは最初のタッチより前に音を出せない）
+let audioCtx = null;
+function unlockAudio(){
+  try{
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (AC && !audioCtx){ audioCtx = new AC(); }
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  }catch(err){ /* 音が使えなくても抽選は続行できる */ }
+}
+
+// 入力欄以外での不要なキー操作を無視（PCで確認するとき用）
+document.addEventListener('keydown', (e) => {
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+  if (e.code === 'Space') e.preventDefault();
+});
+
+// 起動時の状態を整える（隅のボタンは初期設定画面では出さない）
+showScreen('setup');
+refreshSetupNote();
+
+// JavaScript が動いていることの確認表示。
+//   ここが赤いまま「JavaScript が動いていません」と出ている場合、
+//   ボタンを押しても何も起きません（ファイルアプリのプレビューで開くとこうなります）。
+const jsCheck = $('jsCheck');
+jsCheck.textContent = '起動確認：OK  ' + APP_VERSION;
+jsCheck.classList.add('ok');
+</script>
+</body>
+</html>
