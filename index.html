@@ -13,8 +13,7 @@
 
 <style>
 /* =================================================================
-   ステップ1：画面の枠組みだけ
-   ルーレットの本演出と音は、次のステップで入れます。
+   iPad版 抽選アプリ — 見た目の定義
    ================================================================= */
 
 :root{
@@ -247,6 +246,58 @@ body.keyboard .footer{ display:none; }
 #reelBox::before{ top:0;    background:linear-gradient(to bottom, rgba(22,33,62,.9), transparent); }
 #reelBox::after { bottom:0; background:linear-gradient(to top,    rgba(22,33,62,.9), transparent); }
 
+/* ---- 回転中のスロット ----
+   縦だけを切り取り、横は切り取らない（overflow:hidden だと数字の左右が欠けるため）。
+   上下は薄くフェードさせて、中央の1つがはっきり見えるようにする。 */
+#reelViewport{
+  position:absolute; inset:0;
+  overflow:visible;
+  clip-path:inset(0 -50vw);
+  -webkit-mask-image:linear-gradient(to bottom, transparent 1%, #000 30%, #000 70%, transparent 99%);
+          mask-image:linear-gradient(to bottom, transparent 1%, #000 30%, #000 70%, transparent 99%);
+  display:none;
+}
+#reelBox.reeling #reelViewport{ display:block; }
+#reelBox.reeling #number{ visibility:hidden; }
+
+#reelStrip{
+  position:absolute; left:0; right:0; top:0;
+  will-change:transform;
+}
+.reel-cell{
+  display:flex; align-items:center; justify-content:center;
+  line-height:1;
+  color:var(--cream);
+  font-variant-numeric:tabular-nums;
+  letter-spacing:.02em;
+  white-space:nowrap;
+}
+
+/* 確定した数字を、少しズームして見せる */
+#number.win{ animation:winzoom .55s cubic-bezier(.18,.7,.2,1.1) both; }
+@keyframes winzoom{
+  0%{   transform:scale(.62); opacity:.4; }
+  58%{  transform:scale(1.07); opacity:1; }
+  100%{ transform:scale(1); opacity:1; }
+}
+
+/* ---- 当選確定の白フラッシュ ---- */
+#flash{
+  position:absolute; inset:0; z-index:25;
+  background:#fff; opacity:0; pointer-events:none;
+}
+#flash.on{ animation:flashfade .55s ease-out; }
+@keyframes flashfade{ 0%{ opacity:.72; } 100%{ opacity:0; } }
+
+/* ---- 紙吹雪（第1位） ---- */
+#confetti{
+  position:absolute; inset:0; z-index:24;
+  width:100%; height:100%;
+  pointer-events:none;
+  display:none;
+}
+#confetti.on{ display:block; }
+
 /* 数字の大きさは桁数で変える。
    3桁になっても左右が見切れないよう、3桁のときだけ少し小さくする。 */
 #number{
@@ -355,6 +406,10 @@ body.keyboard .footer{ display:none; }
 </head>
 <body>
 
+<!-- 当選確定の白フラッシュ／紙吹雪（第1位） -->
+<div id="flash"></div>
+<canvas id="confetti"></canvas>
+
 <!-- 隅の小さなボタン（抽選画面・完了画面でのみ表示） -->
 <div class="corner" id="btnSound" title="音のON/OFF">♪</div>
 <div class="corner" id="btnReset" title="最初からやり直す（長押し）">⏻</div>
@@ -388,6 +443,9 @@ body.keyboard .footer{ display:none; }
   <div id="rank">第 5 位</div>
 
   <div id="reelBox">
+    <!-- 回転中はこちら（数字が縦に流れるスロット） -->
+    <div id="reelViewport"><div id="reelStrip"></div></div>
+    <!-- 確定したらこちら（大きな数字） -->
     <div id="number">—</div>
   </div>
 
@@ -425,18 +483,18 @@ body.keyboard .footer{ display:none; }
 
 <script>
 /* =================================================================
-   iPad版 抽選アプリ — ステップ1（画面の枠組み）
+   iPad版 抽選アプリ — ステップ2（ルーレット演出と音）
    -----------------------------------------------------------------
-   このステップで出来ること：
-     ・参加人数を入れて抽選を始められる
-     ・第5位 → 第1位まで、5回ぶんの進行ができる
-     ・スタート／ストップ／再抽選／次へ の流れが確認できる
+   出来ること：
+     ・参加人数を入れて、第5位 → 第1位まで5回ぶん抽選できる
+     ・5種類のルーレット演出（後半ほど盛り上がる固定順）と効果音
+     ・第1位は紙吹雪とファンファーレ
+     ・再抽選（辞退）、リザルト画面、リセット
    まだ入っていないもの：
-     ・本物のルーレット演出（今は数字がパラパラ切り替わるだけ）
-     ・音、紙吹雪、進行状況の自動保存
+     ・進行状況の自動保存、ホーム画面追加＋オフライン対応
    ================================================================= */
 
-const APP_VERSION = 'ipad-step1';
+const APP_VERSION = 'ipad-step2';
 
 // ---- 画面の要素をまとめて取得 ------------------------------------
 const $ = (id) => document.getElementById(id);
@@ -467,6 +525,416 @@ let soundOn = true;
 const PATTERNS = ['smooth', 'standard', 'stay', 'tease', 'double'];
 
 const rankOf = (round) => 5 - round;
+
+
+/* =================================================================
+   ▼ ルーレットの「着地の軌道」計算
+   PC版で完成した式をそのまま使っています。映像と音がこの同じ式を共有するので、
+   タメや擬似連のタイミングがぴったり合います。
+   ================================================================= */
+
+// パターンごとに「減速中に余分に流す数字の数」。
+//   長く見せたいパターンは、減速をゆっくりにする（＝押した瞬間に止まって見える）のではなく、
+//   流す数字を増やして長さを出す。
+const REEL_EXTRA = { smooth: 30, tease: 18 };
+function reelExtraCells(pattern){ return REEL_EXTRA[pattern] || 0; }
+
+const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);        // 強めの減速
+const easeOutDecel = (t) => 1 - Math.pow(1 - t, 1.5);      // 出だしが回転速度と同じ、緩やかな減速
+const easeOutBack  = (t) => { const c1 = 1.4, c3 = c1 + 1; // 行き過ぎて戻る＝着地のバウンド感
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
+
+function reelPattern(name, i0, f2, f1, w){
+  const S = (t0, t1, from, to, ease) => ({ t0, t1, from, to, ease });
+  if (name === 'smooth')        // なめらか停止（タメ無し）
+    return [ S(0, 1, i0, w, 'decel') ];
+  if (name === 'double')        // 2ため
+    return [ S(0, 0.300, i0, f2, 'decel'), S(0.300, 0.357, f2, f2, 'lin'),
+             S(0.357, 0.614, f2, f1, 'cubic'), S(0.614, 0.686, f1, f1, 'lin'),
+             S(0.686, 1, f1, w, 'back') ];
+  if (name === 'tease')         // ロング（長く回して1回タメ）
+    return [ S(0, 0.53, i0, f1, 'decel'), S(0.53, 0.66, f1, f1, 'lin'),
+             S(0.66, 1, f1, w, 'back') ];
+  if (name === 'stay')          // 行くと見せかけ → 行かない
+    return [ S(0, 0.365, i0, w, 'decel'),          // 当選番号で止まったように見せる
+             S(0.365, 0.460, w, w, 'lin'),         // 止まった…
+             S(0.460, 0.708, w, w + 0.6, 'cubic'), // 次へ行く!?
+             S(0.708, 1, w + 0.6, w, 'cubic') ];   // …行かない！戻って確定
+  // standard：1ため
+  return [ S(0, 0.446, i0, f1, 'decel'), S(0.446, 0.538, f1, f1, 'lin'),
+           S(0.538, 1, f1, w, 'back') ];
+}
+
+function reelEvalSegs(segs, p){
+  for (const s of segs){
+    if (p <= s.t1 || s === segs[segs.length - 1]){
+      let lt = (p - s.t0) / (s.t1 - s.t0);
+      lt = Math.min(1, Math.max(0, lt));
+      const e = s.ease === 'cubic' ? easeOutCubic(lt)
+              : s.ease === 'decel' ? easeOutDecel(lt)
+              : s.ease === 'back'  ? easeOutBack(lt) : lt;
+      return s.from + (s.to - s.from) * e;
+    }
+  }
+  return segs[segs.length - 1].to;
+}
+
+// 時間 t（ミリ秒）での「中央に来ている数字の位置」を返す関数を作る
+function makeTrajectory(pattern, iStart, fake2Idx, fakeIdx, winnerIdx, delay, duration){
+  const iAtDelay = iStart + delay / 60;       // 全速は「1セル＝60ms」
+  const segs = reelPattern(pattern, iAtDelay, fake2Idx, fakeIdx, winnerIdx);
+  return function (t){
+    if (t < delay) return iStart + t / 60;    // まだ全速で回転中
+    let p = (t - delay) / duration;
+    if (!(p >= 0)) p = 1;                     // NaN 対策
+    if (p > 1) p = 1;
+    return reelEvalSegs(segs, p);
+  };
+}
+
+// 各演出の長さ（ミリ秒）
+const REEL_DURATION = { standard: 6760, double: 9520, tease: 8660, smooth: 5760, stay: 7946 };
+
+
+/* =================================================================
+   ▼ スロット表示（1列）
+   ================================================================= */
+const Reel = (function(){
+  const box = $('reelBox'), strip = $('reelStrip');
+  let pool = [0], cellH = 0, font = 0, pos = 0, nums = [], spinning = false;
+  let spinRaf = null, landRaf = null, landTimer = null;
+
+  const rand = () => pool[Math.floor(Math.random() * pool.length)];
+
+  // セルの高さは JS の計算値をそのまま px 指定する。
+  //   CSS任せにすると計算値と実寸がわずかにズレて、流した枚数ぶん誤差が積み上がるため。
+  function metrics(){
+    const h = box.clientHeight || 300;
+    const w = box.clientWidth  || 400;
+    cellH = h / 2.4;                                  // 中央の数字を大きく見せる
+    const digits = String(pool[pool.length - 1] || 1).length;
+    const byHeight = cellH * 0.84;
+    const byWidth  = (w * 0.92) / Math.max(1, digits * 0.62);
+    font = Math.max(24, Math.min(byHeight, byWidth));
+  }
+
+  function render(){
+    let html = '';
+    for (let i = 0; i < nums.length; i++){
+      html += '<div class="reel-cell" data-i="' + i + '" style="height:' + cellH +
+              'px;font-size:' + font + 'px">' + nums[i] + '</div>';
+    }
+    strip.innerHTML = html;
+  }
+
+  function stopAll(){
+    spinning = false;
+    cancelAnimationFrame(spinRaf);
+    cancelAnimationFrame(landRaf);
+    if (landTimer){ clearTimeout(landTimer); landTimer = null; }
+    box.classList.remove('reeling');
+  }
+
+  // 連続回転スタート
+  function startSpin(p){
+    stopAll();
+    pool = (p && p.length) ? p.slice().sort((a, b) => a - b) : [0];
+    metrics();
+    nums = []; for (let k = 0; k < 6; k++) nums.push(rand());
+    pos = 0; render();
+    box.classList.add('reeling');
+    spinning = true;
+    const v = cellH / 60;                    // 1セル＝60ms
+    let last = performance.now();
+    function loop(now){
+      if (!spinning) return;
+      let dt = now - last; last = now;
+      if (dt > 100) dt = 100;                // フレームが飛んだときの暴走防止
+      pos += v * dt;
+      let guard = 0;
+      while (cellH > 0 && pos >= cellH && guard++ < 300){
+        pos -= cellH;
+        nums.shift(); nums.push(rand()); render();
+      }
+      strip.style.transform = 'translateY(' + (-pos) + 'px)';
+      spinRaf = requestAnimationFrame(loop);
+    }
+    spinRaf = requestAnimationFrame(loop);
+  }
+
+  // 減速して当選番号に着地
+  function land(winner, pattern, duration, onDone){
+    spinning = false;
+    cancelAnimationFrame(spinRaf);
+    cancelAnimationFrame(landRaf);
+    if (landTimer){ clearTimeout(landTimer); landTimer = null; }
+
+    // 「今見えている3つ」＋「流す数字」＋「ハズレ2つ・当選・1つ」の順に並べる
+    const visible = nums.slice(0, 3);
+    const fillers = [];
+    for (let i = 0; i < 30 + reelExtraCells(pattern); i++) fillers.push(rand());
+    let fake = rand(), g = 0;
+    while (fake === winner && pool.length > 1 && g++ < 30) fake = rand();
+    let fake2 = rand(); g = 0;
+    while ((fake2 === winner || fake2 === fake) && pool.length > 2 && g++ < 30) fake2 = rand();
+    nums = visible.concat(fillers, [fake2, fake, winner, rand()]);
+    render();
+
+    const winnerIdx = nums.length - 2;
+    const traj = makeTrajectory(pattern, 1 + pos / cellH,
+                                nums.length - 4, nums.length - 3, winnerIdx, 0, duration);
+    const start = performance.now();
+    let done = false;
+
+    function finish(){
+      if (done) return; done = true;
+      cancelAnimationFrame(landRaf);
+      if (landTimer){ clearTimeout(landTimer); landTimer = null; }
+      strip.style.transform = 'translateY(' + (-(winnerIdx - 1) * cellH) + 'px)';
+      box.classList.remove('reeling');
+      if (onDone) onDone();
+    }
+    function frame(now){
+      if (done) return;
+      let t = now - start;
+      if (!(t >= 0)) t = duration;
+      if (t > duration) t = duration;
+      strip.style.transform = 'translateY(' + (-(traj(t) - 1) * cellH) + 'px)';
+      if (t < duration) landRaf = requestAnimationFrame(frame); else finish();
+    }
+    landRaf = requestAnimationFrame(frame);
+    // 保険：アニメが止まっても、時間＋2秒で必ず当選番号に着地させる
+    landTimer = setTimeout(finish, duration + 2000);
+  }
+
+  // 画面の向きが変わったときにセルの大きさを取り直す
+  function relayout(){
+    if (!nums.length) return;
+    const prev = cellH;
+    metrics();
+    if (prev > 0) pos = pos * (cellH / prev);
+    render();
+  }
+
+  return { startSpin, land, stopAll, relayout };
+})();
+
+
+/* =================================================================
+   ▼ 音（すべて合成音。外部ファイル不要なのでオフラインでも確実に鳴る）
+   ================================================================= */
+const Sound = (function(){
+  let ctx = null, silent = null;
+
+  function ensureCtx(){
+    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state === 'suspended') ctx.resume();
+    return ctx;
+  }
+
+  // iPadの消音スイッチ対策：ほぼ無音のトラックを鳴らし続けて再生セッションを確保する
+  function silentTrack(){
+    const sr = 8000, n = sr;                     // 1秒ぶん
+    const buf = new ArrayBuffer(44 + n);
+    const v = new DataView(buf);
+    const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    w(0, 'RIFF'); v.setUint32(4, 36 + n, true); w(8, 'WAVEfmt ');
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, sr, true); v.setUint32(28, sr, true);
+    v.setUint16(32, 1, true); v.setUint16(34, 8, true);
+    w(36, 'data'); v.setUint32(40, n, true);
+    for (let i = 0; i < n; i++) v.setUint8(44 + i, 128 + (i % 2));   // 聞こえない程度の微小信号
+    const u8 = new Uint8Array(buf);
+    let s = ''; for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+    return 'data:audio/wav;base64,' + btoa(s);
+  }
+
+  function tone(freq, start, dur, type, vol){
+    if (!soundOn) return;
+    const c = ensureCtx(), osc = c.createOscillator(), gain = c.createGain();
+    osc.type = type || 'sine';
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0.0001, c.currentTime + start);
+    gain.gain.exponentialRampToValueAtTime(vol || 0.2, c.currentTime + start + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + start + dur);
+    osc.connect(gain).connect(c.destination);
+    osc.start(c.currentTime + start);
+    osc.stop(c.currentTime + start + dur + 0.02);
+  }
+
+  function noiseBurst(vol){
+    if (!soundOn) return;
+    const c = ensureCtx();
+    const len = Math.floor(c.sampleRate * 0.05);
+    const buf = c.createBuffer(1, len, c.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    const src = c.createBufferSource(); src.buffer = buf;
+    const hp = c.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 1500;
+    const g = c.createGain(); g.gain.value = vol || 0.25;
+    src.connect(hp).connect(g).connect(c.destination);
+    src.start();
+  }
+
+  // ルーレットの「カチッ」。電子的なビープではなく、歯車が1つ進むような機械音。
+  //   ①バンドパスした短いノイズ（芯のあるカチ）＋②低い胴鳴り（トッ）
+  function reelTick(){
+    if (!soundOn) return;
+    const c = ensureCtx(), t = c.currentTime;
+    const len = Math.floor(c.sampleRate * 0.025);
+    const buf = c.createBuffer(1, len, c.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    const src = c.createBufferSource(); src.buffer = buf;
+    const bp = c.createBiquadFilter(); bp.type = 'bandpass';
+    bp.frequency.value = 2400 + Math.random() * 300; bp.Q.value = 1.4;
+    const gN = c.createGain();
+    gN.gain.setValueAtTime(0.45, t);
+    gN.gain.exponentialRampToValueAtTime(0.0008, t + 0.025);
+    src.connect(bp).connect(gN).connect(c.destination);
+    src.start(t);
+
+    const osc = c.createOscillator(), gO = c.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(330, t);
+    osc.frequency.exponentialRampToValueAtTime(150, t + 0.03);
+    gO.gain.setValueAtTime(0.15, t);
+    gO.gain.exponentialRampToValueAtTime(0.0001, t + 0.045);
+    osc.connect(gO).connect(c.destination);
+    osc.start(t); osc.stop(t + 0.06);
+  }
+
+  let reelTimer = null;
+  function startReelSpin(){
+    ensureCtx();
+    if (reelTimer) return;
+    reelTimer = setInterval(reelTick, 60);      // 回転と同じテンポ（1セル＝60ms）
+  }
+  function stopReelSpin(){
+    if (reelTimer){ clearInterval(reelTimer); reelTimer = null; }
+  }
+
+  function playStop(){ noiseBurst(0.5); tone(180, 0, 0.25, 'triangle', 0.4); }
+
+  function playWin(){                            // 上昇する3音
+    tone(523, 0.00, 0.18, 'sine', 0.3);
+    tone(659, 0.12, 0.18, 'sine', 0.3);
+    tone(784, 0.24, 0.30, 'sine', 0.35);
+  }
+
+  function playFanfare(){                        // 第1位用
+    const seq = [523, 523, 523, 523, 659, 784, 1047];
+    const tms = [0, 0.15, 0.30, 0.45, 0.62, 0.80, 1.02];
+    seq.forEach((f, i) => tone(f, tms[i], i === seq.length - 1 ? 0.7 : 0.16, 'triangle', 0.3));
+  }
+
+  // 最初のタップで呼ぶ（iOSはタッチ前に音を鳴らせない）
+  function unlock(){
+    try{
+      ensureCtx();
+      if (!silent){
+        silent = new Audio(silentTrack());
+        silent.loop = true;
+        silent.setAttribute('playsinline', '');
+        silent.play().catch(() => {});
+      }
+    }catch(err){ /* 音が使えなくても抽選は続けられる */ }
+  }
+
+  return { unlock, reelTick, startReelSpin, stopReelSpin, playStop, playWin, playFanfare };
+})();
+
+// 着地中のクリック音。映像とまったく同じ軌道を計算し、
+//   数字が1つ中央に進むたびに1回鳴らす（減速・タメに自然に同期する）。
+let landingClickRAF = null;
+function startLandingClicks(pattern, duration){
+  cancelAnimationFrame(landingClickRAF);
+  // 並びは「見えている3つ＋流す(30+余分)＋4つ」なので、当選は末尾から2番目
+  const winnerIdx = 35 + reelExtraCells(pattern);
+  const traj = makeTrajectory(pattern, 1, winnerIdx - 2, winnerIdx - 1, winnerIdx, 0, duration);
+  const start = performance.now();
+  let lastCell = 1;
+  function loop(now){
+    let t = now - start; if (t > duration) t = duration;
+    const cell = Math.floor(traj(t));
+    if (cell !== lastCell){ lastCell = cell; Sound.reelTick(); }
+    if (t < duration) landingClickRAF = requestAnimationFrame(loop);
+  }
+  landingClickRAF = requestAnimationFrame(loop);
+}
+function stopLandingClicks(){ cancelAnimationFrame(landingClickRAF); }
+
+
+/* =================================================================
+   ▼ 白フラッシュと紙吹雪（第1位）
+   ================================================================= */
+let flashTimer = null;
+function fireFlash(){
+  const f = $('flash');
+  f.classList.remove('on'); void f.offsetWidth; f.classList.add('on');
+  // 別アプリに切り替わるとCSSアニメも止まるので、時間が来たら確実に消す
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => f.classList.remove('on'), 1000);
+}
+
+const Confetti = (function(){
+  const cv = $('confetti');
+  const cx = cv.getContext('2d');
+  let raf = null, parts = [], endAt = 0, safety = null;
+  const COLORS = ['#D4A548', '#C9A548', '#B8902F', '#F0E2B8', '#FFFFFF'];
+
+  function start(){
+    stop();
+    cv.classList.add('on');            // 先に表示してからサイズを測る（隠れていると 0 になる）
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const W = cv.clientWidth || window.innerWidth;
+    const H = cv.clientHeight || window.innerHeight;
+    cv.width  = W * dpr;
+    cv.height = H * dpr;
+    cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    parts = [];
+    for (let i = 0; i < 170; i++){
+      parts.push({
+        // 画面の上側にばらけて配置し、すぐに降ってくるようにする
+        x: Math.random() * W, y: -20 - Math.random() * H,
+        w: 5 + Math.random() * 8, h: 9 + Math.random() * 12,
+        vy: 200 + Math.random() * 300, vx: -50 + Math.random() * 100,
+        rot: Math.random() * Math.PI, vr: -3 + Math.random() * 6,
+        color: COLORS[Math.floor(Math.random() * COLORS.length)]
+      });
+    }
+    endAt = performance.now() + 6000;
+    let last = performance.now();
+    function loop(now){
+      let dt = (now - last) / 1000; last = now;
+      if (dt > 0.08) dt = 0.08;
+      cx.clearRect(0, 0, W, H);
+      for (const p of parts){
+        p.y += p.vy * dt; p.x += p.vx * dt; p.rot += p.vr * dt;
+        if (p.y > H + 30){ p.y = -20; p.x = Math.random() * W; }
+        cx.save();
+        cx.translate(p.x, p.y); cx.rotate(p.rot);
+        cx.fillStyle = p.color; cx.globalAlpha = .9;
+        cx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+        cx.restore();
+      }
+      if (now < endAt) raf = requestAnimationFrame(loop);
+      else stop();
+    }
+    raf = requestAnimationFrame(loop);
+    clearTimeout(safety);
+    safety = setTimeout(stop, 8000);      // 念のための打ち切り
+  }
+
+  function stop(){
+    cancelAnimationFrame(raf); raf = null;
+    clearTimeout(safety); safety = null;
+    cv.classList.remove('on');
+    if (cx) cx.clearRect(0, 0, cv.width, cv.height);
+  }
+
+  return { start, stop };
+})();
 
 
 /* -----------------------------------------------------------------
@@ -556,6 +1024,10 @@ $('btnStartApp').addEventListener('touchend', startAppOnce);
 // 1回ぶんの準備（順位を表示して、待機状態にする）
 function beginRound(){
   state.phase = 'idle';
+  Reel.stopAll();
+  stopLandingClicks();
+  Sound.stopReelSpin();
+  Confetti.stop();
   elRank.textContent = `第 ${rankOf(state.round)} 位`;
   elNumber.textContent = '—';
   elNumber.classList.remove('win');
@@ -596,35 +1068,51 @@ function updateButtons(){
   btnNext.textContent = (state.round >= 4) ? '終了' : '次へ';
 }
 
-// --- 仮のルーレット（ステップ2で本物の演出に差し替えます） ---
-let spinTimer = null;
-
 function startSpin(){
   if (state.phase !== 'idle') return;
   if (state.pool.length === 0){ alert('抽選できる番号が残っていません'); return; }
   state.phase = 'spinning';
   elNumber.classList.remove('win', 'idle');
   updateButtons();
-  // 1セル＝60ms（本番の回転速度と同じテンポにしてある）
-  spinTimer = setInterval(() => {
-    setNumber(state.pool[Math.floor(Math.random() * state.pool.length)]);
-  }, 60);
+  Reel.startSpin(state.pool);
+  Sound.startReelSpin();
 }
 
 function stopSpin(){
   if (state.phase !== 'spinning') return;
-  clearInterval(spinTimer); spinTimer = null;
+  state.phase = 'landing';        // 演出中はボタンを出さない（誤操作防止）
+  updateButtons();
+  Sound.stopReelSpin();
 
   // ストップを押した瞬間に、残っている番号から公正に1つ選ぶ
   const idx = Math.floor(Math.random() * state.pool.length);
   const winner = state.pool[idx];
   state.pool.splice(idx, 1);
-  state.winners.push({ rank: rankOf(state.round), num: winner });
+  const rank = rankOf(state.round);
+  state.winners.push({ rank, num: winner });
 
-  setNumber(winner);
-  elNumber.classList.add('win');
-  state.phase = 'result';
-  updateButtons();
+  // この回の演出（第5位から順に、後半ほど盛り上がる固定順）
+  const pattern  = PATTERNS[state.round];
+  const duration = REEL_DURATION[pattern];
+
+  startLandingClicks(pattern, duration);
+  Reel.land(winner, pattern, duration, () => {
+    stopLandingClicks();
+    setNumber(winner);
+    elNumber.classList.remove('idle', 'win');
+    void elNumber.offsetWidth;              // アニメを確実に再生させる
+    elNumber.classList.add('win');
+    fireFlash();
+    Sound.playStop();
+    if (rank === 1){                        // 第1位だけ紙吹雪とファンファーレ
+      Confetti.start();
+      setTimeout(() => Sound.playFanfare(), 280);
+    } else {
+      setTimeout(() => Sound.playWin(), 200);
+    }
+    state.phase = 'result';
+    updateButtons();
+  });
 }
 
 btnSpin.addEventListener('click', startSpin);
@@ -632,6 +1120,7 @@ btnStop.addEventListener('click', stopSpin);
 
 // --- 再抽選（辞退） ---
 btnRedraw.addEventListener('click', () => {
+  if (state.phase !== 'result') return;
   const last = state.winners[state.winners.length - 1];
   confirmDialog(
     `第 ${last.rank} 位の当選番号<br><b>${last.num}</b><br>を辞退として、もう一度抽選しますか？`,
@@ -645,6 +1134,7 @@ btnRedraw.addEventListener('click', () => {
 
 // --- 次へ ---
 btnNext.addEventListener('click', () => {
+  if (state.phase !== 'result') return;
   if (state.round >= 4){ renderResult(); showScreen('done'); return; }
   state.round++;
   beginRound();
@@ -675,9 +1165,11 @@ dlgNo.addEventListener('click', () => {
    隅のボタン
    ----------------------------------------------------------------- */
 
-// 音のON/OFF（音そのものはステップ2で入れます）
+// 音のON/OFF
 btnSound.addEventListener('click', () => {
   soundOn = !soundOn;
+  if (!soundOn) Sound.stopReelSpin();
+  else if (state.phase === 'spinning') Sound.startReelSpin();
   btnSound.textContent = soundOn ? '♪' : '×';
   btnSound.style.opacity = soundOn ? '1' : '.45';
 });
@@ -690,7 +1182,10 @@ function holdStart(e){
   holdTimer = setTimeout(() => {
     btnReset.classList.remove('holding');
     confirmDialog('抽選を最初からやり直しますか？<br>これまでの結果は消えます。', () => {
-      clearInterval(spinTimer); spinTimer = null;
+      Reel.stopAll();
+      stopLandingClicks();
+      Sound.stopReelSpin();
+      Confetti.stop();
       state.phase = 'idle';
       showScreen('setup');
       refreshSetupNote();
@@ -724,6 +1219,7 @@ function applyViewportHeight(){
   // キーボードが出ているかどうか（高さが1割以上縮んだら出ていると判断）
   const keyboardOpen = !!vv && (window.innerHeight - vv.height > window.innerHeight * 0.1);
   document.body.classList.toggle('keyboard', keyboardOpen);
+  Reel.relayout();
 }
 if (window.visualViewport){
   window.visualViewport.addEventListener('resize', applyViewportHeight);
@@ -748,14 +1244,7 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // 音を鳴らせる状態にする（iOSは最初のタッチより前に音を出せない）
-let audioCtx = null;
-function unlockAudio(){
-  try{
-    const AC = window.AudioContext || window.webkitAudioContext;
-    if (AC && !audioCtx){ audioCtx = new AC(); }
-    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
-  }catch(err){ /* 音が使えなくても抽選は続行できる */ }
-}
+function unlockAudio(){ Sound.unlock(); }
 
 // 入力欄以外での不要なキー操作を無視（PCで確認するとき用）
 document.addEventListener('keydown', (e) => {
