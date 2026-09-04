@@ -602,6 +602,7 @@ const REEL_DURATION = { standard: 6760, double: 9520, tease: 8660, smooth: 5760,
 const Reel = (function(){
   const box = $('reelBox'), strip = $('reelStrip');
   let pool = [0], cellH = 0, font = 0, pos = 0, nums = [], spinning = false;
+  let centerY = 0;                       // 「位置iの数字」を枠の中央に置くための基準
   let spinRaf = null, landRaf = null, landTimer = null;
 
   const rand = () => pool[Math.floor(Math.random() * pool.length)];
@@ -612,10 +613,19 @@ const Reel = (function(){
     const h = box.clientHeight || 300;
     const w = box.clientWidth  || 400;
     cellH = h / 2.4;                                  // 中央の数字を大きく見せる
+    // 位置i の数字の中心（(i+0.5)*cellH）を、枠の中心（h/2）に合わせる。
+    //   ここを「3セル見える前提」の式にすると、セル数を変えたときに
+    //   数字と数字の“間”で止まって見えてしまう。
+    centerY = h / 2 - cellH / 2;
     const digits = String(pool[pool.length - 1] || 1).length;
     const byHeight = cellH * 0.84;
     const byWidth  = (w * 0.92) / Math.max(1, digits * 0.62);
     font = Math.max(24, Math.min(byHeight, byWidth));
+  }
+
+  // 位置 i（小数可）の数字が枠の中央に来るように動かす
+  function setStrip(i){
+    strip.style.transform = 'translateY(' + (centerY - i * cellH) + 'px)';
   }
 
   function render(){
@@ -656,7 +666,7 @@ const Reel = (function(){
         pos -= cellH;
         nums.shift(); nums.push(rand()); render();
       }
-      strip.style.transform = 'translateY(' + (-pos) + 'px)';
+      setStrip(1 + pos / cellH);
       spinRaf = requestAnimationFrame(loop);
     }
     spinRaf = requestAnimationFrame(loop);
@@ -690,7 +700,7 @@ const Reel = (function(){
       if (done) return; done = true;
       cancelAnimationFrame(landRaf);
       if (landTimer){ clearTimeout(landTimer); landTimer = null; }
-      strip.style.transform = 'translateY(' + (-(winnerIdx - 1) * cellH) + 'px)';
+      setStrip(winnerIdx);
       box.classList.remove('reeling');
       if (onDone) onDone();
     }
@@ -699,7 +709,7 @@ const Reel = (function(){
       let t = now - start;
       if (!(t >= 0)) t = duration;
       if (t > duration) t = duration;
-      strip.style.transform = 'translateY(' + (-(traj(t) - 1) * cellH) + 'px)';
+      setStrip(traj(t));
       if (t < duration) landRaf = requestAnimationFrame(frame); else finish();
     }
     landRaf = requestAnimationFrame(frame);
