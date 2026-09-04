@@ -9,6 +9,9 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="80周年抽選会">
+<link rel="manifest" href="./manifest.json">
+<link rel="apple-touch-icon" href="./icon-180.png">
+<link rel="icon" href="./icon-192.png">
 <title>新興窯業株式会社 80周年記念抽選会</title>
 
 <style>
@@ -193,19 +196,6 @@ body.keyboard .footer{ display:none; }
   text-align:center;
   font-variant-numeric:tabular-nums;
 }
-
-/* JavaScriptが動いているかの確認表示（本番前に消します） */
-#jsCheck{
-  position:absolute;
-  bottom:max(38px, calc(env(safe-area-inset-bottom) + 26px));
-  left:0; right:0;
-  text-align:center;
-  font-size:clamp(10px, 1.5vmin, 14px);
-  letter-spacing:.12em;
-  color:#E8A0A0;
-  pointer-events:none;
-}
-#jsCheck.ok{ color:rgba(120,200,150,.7); }
 
 .note{
   font-size:clamp(12px, 1.9vmin, 17px);
@@ -434,7 +424,6 @@ body.keyboard .footer{ display:none; }
   <button class="btn primary" id="btnStartApp">はじめる</button>
 
   <div class="footer">新興窯業株式会社　80周年記念抽選会</div>
-  <div id="jsCheck">起動確認：JavaScript が動いていません</div>
 </div>
 
 
@@ -483,18 +472,18 @@ body.keyboard .footer{ display:none; }
 
 <script>
 /* =================================================================
-   iPad版 抽選アプリ — ステップ2（ルーレット演出と音）
+   iPad版 抽選アプリ
    -----------------------------------------------------------------
    出来ること：
      ・参加人数を入れて、第5位 → 第1位まで5回ぶん抽選できる
      ・5種類のルーレット演出（後半ほど盛り上がる固定順）と効果音
      ・第1位は紙吹雪とファンファーレ
      ・再抽選（辞退）、リザルト画面、リセット
-   まだ入っていないもの：
-     ・進行状況の自動保存、ホーム画面追加＋オフライン対応
+     ・進行状況の自動保存（誤って閉じても続きから再開できる）
+     ・ホーム画面に追加すると、オフラインでも起動できる
    ================================================================= */
 
-const APP_VERSION = 'ipad-step2';
+const APP_VERSION = 'ipad-step4';
 
 // ---- 画面の要素をまとめて取得 ------------------------------------
 const $ = (id) => document.getElementById(id);
@@ -950,7 +939,9 @@ const Confetti = (function(){
 /* -----------------------------------------------------------------
    画面の切り替え
    ----------------------------------------------------------------- */
+let currentScreen = 'setup';
 function showScreen(name){
+  currentScreen = name;
   [scSetup, scMain, scDone].forEach(s => s.classList.remove('active'));
   ({ setup: scSetup, main: scMain, done: scDone })[name].classList.add('active');
   // 隅のボタンは初期設定画面では隠す
@@ -1012,6 +1003,7 @@ function startApp(){
   requestWakeLock();      // 画面が消えないようにする
   beginRound();
   showScreen('main');
+  saveProgress();
 }
 
 // キーボードが閉じる拍子にタップが空振りすることがあるので、
@@ -1122,6 +1114,7 @@ function stopSpin(){
     }
     state.phase = 'result';
     updateButtons();
+    saveProgress();
   });
 }
 
@@ -1138,6 +1131,7 @@ btnRedraw.addEventListener('click', () => {
       state.winners.pop();
       state.declined.push(last.num);   // 以降の回でも二度と出さない（プールに戻さない）
       beginRound();
+      saveProgress();
     }
   );
 });
@@ -1145,30 +1139,105 @@ btnRedraw.addEventListener('click', () => {
 // --- 次へ ---
 btnNext.addEventListener('click', () => {
   if (state.phase !== 'result') return;
-  if (state.round >= 4){ renderResult(); showScreen('done'); return; }
+  if (state.round >= 4){ renderResult(); showScreen('done'); saveProgress(); return; }
   state.round++;
   beginRound();
+  saveProgress();
 });
 
 
 /* -----------------------------------------------------------------
    確認ダイアログ
    ----------------------------------------------------------------- */
-let dlgCallback = null;
-function confirmDialog(html, onYes){
+let dlgCallback = null, dlgCallbackNo = null;
+function confirmDialog(html, onYes, opt){
+  opt = opt || {};
   dlgText.innerHTML = html;
+  dlgYes.textContent = opt.yes || 'はい';
+  dlgNo.textContent  = opt.no  || 'やめる';
   dlgCallback = onYes;
+  dlgCallbackNo = opt.onNo || null;
   dlgBack.classList.add('active');
 }
 dlgYes.addEventListener('click', () => {
   dlgBack.classList.remove('active');
-  const cb = dlgCallback; dlgCallback = null;
+  const cb = dlgCallback; dlgCallback = null; dlgCallbackNo = null;
   if (cb) cb();
 });
 dlgNo.addEventListener('click', () => {
   dlgBack.classList.remove('active');
-  dlgCallback = null;
+  const cb = dlgCallbackNo; dlgCallback = null; dlgCallbackNo = null;
+  if (cb) cb();
 });
+
+
+/* -----------------------------------------------------------------
+   進行状況の自動保存
+   誤ってアプリを閉じても、開き直せば続きから再開できるようにする。
+   保存先はこのiPadの中だけ（localStorage）。外には一切送りません。
+   ----------------------------------------------------------------- */
+const SAVE_KEY = 'shinko80_ipad_v1';
+
+function saveProgress(){
+  try{
+    localStorage.setItem(SAVE_KEY, JSON.stringify({
+      v: 1, max: state.max, round: state.round, pool: state.pool,
+      winners: state.winners, declined: state.declined,
+      screen: currentScreen, at: Date.now()
+    }));
+  }catch(err){ /* 保存できなくても抽選は続けられる */ }
+}
+function clearProgress(){
+  try{ localStorage.removeItem(SAVE_KEY); }catch(err){}
+}
+function loadProgress(){
+  try{
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return null;
+    const p = JSON.parse(raw);
+    // 中身がおかしい保存データは無視する
+    if (!p || p.v !== 1) return null;
+    if (typeof p.max !== 'number' || p.max < 5) return null;
+    if (typeof p.round !== 'number' || p.round < 0 || p.round > 4) return null;
+    if (!Array.isArray(p.pool) || !Array.isArray(p.winners) || !Array.isArray(p.declined)) return null;
+    return p;
+  }catch(err){ return null; }
+}
+
+// 保存データから続きを復元する（ボタンを押して呼ばれるので、ここで音も有効にできる）
+function restoreProgress(p){
+  state.max = p.max;
+  state.round = p.round;
+  state.pool = p.pool;
+  state.winners = p.winners;
+  state.declined = p.declined;
+  maxInput = p.max;
+  refreshSetupNote();
+  Sound.unlock();
+  requestWakeLock();
+  if (p.screen === 'done'){
+    renderResult();
+    showScreen('done');
+  } else {
+    beginRound();
+    showScreen('main');
+  }
+}
+
+// 起動時に、途中のデータがあれば聞く
+function askResume(){
+  const p = loadProgress();
+  if (!p) return;
+  if (p.screen === 'done'){
+    confirmDialog('前回の<b>抽選結果</b>が残っています。<br>結果を表示しますか？',
+      () => restoreProgress(p),
+      { yes: '結果を見る', no: '最初から', onNo: clearProgress });
+  } else {
+    confirmDialog(`前回の抽選が途中で終わっています。<br><b>第 ${5 - p.round} 位</b>から続けますか？`,
+      () => restoreProgress(p),
+      { yes: '続きから', no: '最初から', onNo: clearProgress });
+  }
+}
 
 
 /* -----------------------------------------------------------------
@@ -1196,6 +1265,7 @@ function holdStart(e){
       stopLandingClicks();
       Sound.stopReelSpin();
       Confetti.stop();
+      clearProgress();
       state.phase = 'idle';
       showScreen('setup');
       refreshSetupNote();
@@ -1267,12 +1337,16 @@ document.addEventListener('keydown', (e) => {
 showScreen('setup');
 refreshSetupNote();
 
-// JavaScript が動いていることの確認表示。
-//   ここが赤いまま「JavaScript が動いていません」と出ている場合、
-//   ボタンを押しても何も起きません（ファイルアプリのプレビューで開くとこうなります）。
-const jsCheck = $('jsCheck');
-jsCheck.textContent = '起動確認：OK  ' + APP_VERSION;
-jsCheck.classList.add('ok');
+// オフラインでも起動できるようにする（ホーム画面に追加して使う場合）
+//   file:// で開いたときは使えないので、その場合は何もしない。
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')){
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch(() => {});
+  });
+}
+
+// 途中で終わっている抽選があれば、続きから始めるか聞く
+askResume();
 </script>
 </body>
 </html>
